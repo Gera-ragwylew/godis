@@ -1,0 +1,7 @@
+1. Multiple room participants
+1.2 Automatically obtain available IP addresses for connection
+2. Audio compression (opus, etc.)
+3. Chat
+4. UI
+?. Fix underflows
+?. RTP over UPD
