@@ -2,6 +2,7 @@ package receiver
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	worker "godis/internal"
@@ -15,12 +16,21 @@ import (
 	"github.com/gordonklaus/portaudio"
 )
 
-const jitterBufferPackets = 3
+const (
+	HeaderSize          = 4
+	jitterBufferPackets = 3
+)
 
 type Receiver struct {
 	worker.BaseEntity
 	worker.AudioEntity
 	udpBufferPool sync.Pool
+}
+
+type PacketData struct {
+	Addr     string
+	Sequence uint32
+	Audio    []byte
 }
 
 func New(config interface{}) *Receiver {
@@ -54,7 +64,7 @@ func New(config interface{}) *Receiver {
 
 	r.udpBufferPool = sync.Pool{
 		New: func() interface{} {
-			return make([]byte, r.FrameSize*2)
+			return make([]byte, 4+r.FrameSize*2)
 		},
 	}
 
@@ -92,20 +102,19 @@ func (r *Receiver) Start(ctx context.Context, wg *sync.WaitGroup) error {
 	defer stream.Stop()
 
 	jitterBufferSize := r.FrameSize * jitterBufferPackets
-
 	audioBuffer := newRingBuffer(jitterBufferSize)
 
-	packetChan := make(chan []byte, 20)
+	packetChan := make(chan *PacketData, 20)
 	playbackReady := make(chan struct{}, 1)
 
+	mixer := NewMixer(r.FrameSize)
+
 	go r.udpReceiver(ctx, conn, packetChan)
-
-	go r.audioProcessor(ctx, packetChan, audioBuffer, playbackReady)
-
-	return r.playbackLoop(ctx, stream, audioBuffer, playbackReady, out)
+	go r.audioProcessor(ctx, packetChan, audioBuffer, playbackReady, mixer)
+	return r.playbackLoop(ctx, stream, audioBuffer, playbackReady, out, mixer)
 }
 
-func (r *Receiver) udpReceiver(ctx context.Context, conn *net.UDPConn, packetChan chan<- []byte) {
+func (r *Receiver) udpReceiver(ctx context.Context, conn *net.UDPConn, packetChan chan<- *PacketData) {
 	defer close(packetChan)
 
 	readTimeout := 100 * time.Millisecond
@@ -116,13 +125,15 @@ func (r *Receiver) udpReceiver(ctx context.Context, conn *net.UDPConn, packetCha
 			return
 
 		default:
-			buffer := r.udpBufferPool.Get().([]byte)
+			// buffer := r.udpBufferPool.Get().([]byte) // try it sometime
+			buffer := make([]byte, r.FrameSize*2+4)
 
 			conn.SetReadDeadline(time.Now().Add(readTimeout))
 
-			n, _, err := conn.ReadFromUDP(buffer)
+			n, addr, err := conn.ReadFromUDP(buffer)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					fmt.Println("Read timeout")
 					continue
 				}
 
@@ -131,46 +142,76 @@ func (r *Receiver) udpReceiver(ctx context.Context, conn *net.UDPConn, packetCha
 					return
 				}
 
-				fmt.Printf("Read error: %v", err)
+				fmt.Println("Read error: %v", err)
 				continue
 			}
 
-			if n > 0 {
+			if n >= HeaderSize {
+				sequence := binary.LittleEndian.Uint32(buffer[:HeaderSize])
+				pd := &PacketData{
+					Addr:     addr.String(),
+					Sequence: sequence,
+					Audio:    make([]byte, n-HeaderSize),
+				}
+				copy(pd.Audio, buffer[HeaderSize:n])
+
+				// r.udpBufferPool.Put(buffer)
+
 				select {
-				case packetChan <- buffer[:n]:
+				case packetChan <- pd:
+					log.Printf("Received packet from %s, seq=%d, size=%d",
+						pd.Addr, pd.Sequence, len(pd.Audio))
 				case <-ctx.Done():
-					r.udpBufferPool.Put(buffer)
+					// r.udpBufferPool.Put(buffer)
 					return
 				case <-time.After(10 * time.Millisecond):
-					r.udpBufferPool.Put(buffer)
-					log.Println("Packet pass (packet channel full)")
+					// r.udpBufferPool.Put(buffer)
+					log.Println("Packet dropped (packet channel full)")
 				}
 			} else {
-				r.udpBufferPool.Put(buffer)
+				// r.udpBufferPool.Put(buffer)
 			}
 		}
 	}
 }
 
-func (r *Receiver) audioProcessor(ctx context.Context, packetChan <-chan []byte,
-	buffer *ringBuffer, playbackReady chan<- struct{}) {
+func (r *Receiver) audioProcessor(ctx context.Context, packetChan <-chan *PacketData,
+	buffer *ringBuffer, playbackReady chan<- struct{}, mixer *mixer) {
 
 	minBufferSize := r.FrameSize
+
+	// Таймер для периодического микширования
+	mixTicker := time.NewTicker(20 * time.Millisecond) // 20ms = 50 FPS
+	defer mixTicker.Stop()
+
+	// Таймер для очистки неактивных участников
+	cleanupTicker := time.NewTicker(5 * time.Second)
+	defer cleanupTicker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 
-		case packetData, ok := <-packetChan:
+		case pd, ok := <-packetChan:
 			if !ok {
 				return
 			}
 
-			if len(packetData) >= 2 && len(packetData)%2 == 0 {
-				samples := r.convertBytesToSamples(packetData)
+			if len(pd.Audio) >= 2 && len(pd.Audio)%2 == 0 {
+				samples := r.convertBytesToSamples(pd.Audio)
 
-				buffer.Write(samples)
+				// Добавляем фрейм в микшер
+				if len(samples) > 0 {
+					mixer.AddFrame(pd.Addr, pd.Sequence, samples)
+				}
+			}
+		case <-mixTicker.C:
+			// Каждые 20ms микшируем и отправляем в буфер
+			mixedSamples := mixer.Mix()
+
+			if mixedSamples != nil {
+				buffer.Write(mixedSamples)
 
 				if buffer.Available() >= minBufferSize && len(playbackReady) == 0 {
 					select {
@@ -180,15 +221,32 @@ func (r *Receiver) audioProcessor(ctx context.Context, packetChan <-chan []byte,
 				}
 			}
 
-			if cap(packetData) >= r.FrameSize*2 {
-				r.udpBufferPool.Put(packetData[:cap(packetData)])
-			}
+		case <-cleanupTicker.C:
+			// Очищаем неактивных участников раз в 5 секунд
+			mixer.Cleanup()
 		}
+		// 	if len(pd.Audio) >= 2 && len(pd.Audio)%2 == 0 {
+		// 		samples := r.convertBytesToSamples(pd.Audio)
+
+		// 		buffer.Write(samples)
+
+		// 		if buffer.Available() >= minBufferSize && len(playbackReady) == 0 {
+		// 			select {
+		// 			case playbackReady <- struct{}{}:
+		// 			default:
+		// 			}
+		// 		}
+		// 	}
+
+		// 	if cap(pd.Audio) >= r.FrameSize*2 {
+		// 		r.udpBufferPool.Put(pd.Audio[:cap(pd.Audio)])
+		// 	}
+		// }
 	}
 }
 
 func (r *Receiver) playbackLoop(ctx context.Context, stream *portaudio.Stream,
-	buffer *ringBuffer, playbackReady <-chan struct{}, out []int16) error {
+	buffer *ringBuffer, playbackReady <-chan struct{}, out []int16, mixer *mixer) error {
 
 	frameDuration := time.Duration(float64(r.FrameSize)/r.SampleRate*1000) * time.Millisecond
 

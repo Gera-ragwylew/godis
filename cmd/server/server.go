@@ -39,7 +39,7 @@ func (s *Server) Start() {
 		go func() {
 			defer s.wg.Done()
 			if err := worker.Start(s.ctx, &s.wg); err != nil {
-				log.Println("Worker error (continuing): %v", err)
+				log.Println("Worker error (continuing): ", err)
 			}
 		}()
 	}

@@ -6,7 +6,7 @@ import (
 )
 
 type BaseEntity struct {
-	Ip   string
+	Ip   []string
 	Port string
 }
 

@@ -21,10 +21,10 @@ const (
 )
 
 type ConfigJSON struct {
-	IP         string  `json:"ip"`
-	Port       string  `json:"port"`
-	SampleRate float64 `json:"sampleRate"`
-	FrameSize  int     `json:"frameSize"`
+	IP         []string `json:"ip"`
+	Port       string   `json:"port"`
+	SampleRate float64  `json:"sampleRate"`
+	FrameSize  int      `json:"frameSize"`
 }
 
 func main() {
