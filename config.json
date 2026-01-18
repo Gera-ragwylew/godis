@@ -2,5 +2,5 @@
     "ip": ["localhost", "localhost"],
     "port": "4899",
     "sampleRate": 16000,
-    "frameSize": 256
+    "frameSize": 960
 }

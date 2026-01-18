@@ -2,11 +2,9 @@ package sender
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	worker "godis/internal"
 	"log"
-	"math"
 	"net"
 	"reflect"
 	"strings"
@@ -14,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gordonklaus/portaudio"
+	"github.com/hraban/opus"
 )
 
 type Sender struct {
@@ -25,6 +24,12 @@ type Sender struct {
 	seqMutex   sync.Mutex
 }
 
+const (
+	sampleRate = 16000
+	channels   = 1
+	bitrate    = 64000
+)
+
 func New(config interface{}) *Sender {
 	s := &Sender{}
 	v := reflect.ValueOf(config)
@@ -34,7 +39,7 @@ func New(config interface{}) *Sender {
 	}
 
 	if v.Kind() != reflect.Struct {
-		fmt.Println("Sender.New() expects structure, received %v", v.Kind())
+		fmt.Println("Sender.New() expects structure, received ", v.Kind())
 		return s
 	}
 
@@ -89,14 +94,14 @@ func (s *Sender) Start(ctx context.Context, wg *sync.WaitGroup) error {
 		go func() {
 			err := s.sendPackets(ctx, packetChan, addr+":"+s.Port)
 			if err != nil {
-				fmt.Println("Send packets error: %v", err)
+				fmt.Println("Send packets error: ", err)
 			}
 		}()
 	}
 
 	err = s.recordLoop(ctx, stream, packetChan, in)
 	if err != nil {
-		fmt.Println("%v", err)
+		fmt.Println(err)
 	}
 	return nil
 }
@@ -109,6 +114,14 @@ func (s *Sender) recordLoop(ctx context.Context, stream *portaudio.Stream, packe
 
 	frameDuration := time.Duration(float64(s.FrameSize)/s.SampleRate*1000) * time.Millisecond
 
+	//
+	encoder, err := opus.NewEncoder(sampleRate, channels, opus.AppVoIP)
+	if err != nil {
+		panic(err)
+	}
+	encoder.SetBitrate(bitrate)
+	//
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -120,18 +133,19 @@ func (s *Sender) recordLoop(ctx context.Context, stream *portaudio.Stream, packe
 				continue
 			}
 
-			s.seqMutex.Lock()
-			currentSeq := s.sequence
-			s.sequence++
-			if s.sequence == 0 { // Обработка overflow uint32
-				s.sequence = 1
-			}
-			s.seqMutex.Unlock()
+			// s.seqMutex.Lock()
+			// currentSeq := s.sequence
+			// s.sequence++
+			// if s.sequence == 0 { // Обработка overflow uint32
+			// 	s.sequence = 1
+			// }
+			// s.seqMutex.Unlock()
 
-			packet := s.bufferPool.Get().([]byte)
+			// packet := s.bufferPool.Get().([]byte)
 
-			binary.LittleEndian.PutUint32(packet[0:4], currentSeq)
-			s.convertToPCM(in, packet[4:])
+			// binary.LittleEndian.PutUint32(packet[0:4], currentSeq)
+			pcmData := s.convertToPCM(in)
+			packet := s.opusEncode(encoder, pcmData)
 
 			select {
 			case packetChan <- packet:
@@ -145,7 +159,17 @@ func (s *Sender) recordLoop(ctx context.Context, stream *portaudio.Stream, packe
 	}
 }
 
-func (s *Sender) convertToPCM(in []float32, packet []byte) {
+func (s *Sender) opusEncode(encoder *opus.Encoder, pcmData []int16) []byte {
+	encoded := make([]byte, 4000)
+	n, err := encoder.Encode(pcmData, encoded)
+	if err != nil {
+		panic(err)
+	}
+	return encoded[:n]
+}
+
+func (s *Sender) convertToPCM(in []float32) []int16 {
+	pcmData := make([]int16, len(in))
 	for i := range in {
 		sample := in[i]
 
@@ -155,17 +179,12 @@ func (s *Sender) convertToPCM(in []float32, packet []byte) {
 		} else if sample <= -1.0 {
 			pcm = -32767
 		} else {
-			pcm = int16(math.Round(float64(sample * 32767.0)))
+			pcm = int16(sample * 32767.0)
 		}
-
-		if i*2+1 < len(packet) {
-			packet[i*2] = byte(pcm)
-			packet[i*2+1] = byte(pcm >> 8)
-		} else {
-			log.Printf("Buffer overflow: i=%d, packet len=%d", i, len(packet))
-			break
-		}
+		pcmData[i] = pcm
 	}
+
+	return pcmData
 }
 
 func (s *Sender) sendPackets(ctx context.Context, packetChan <-chan []byte, addr string) error {

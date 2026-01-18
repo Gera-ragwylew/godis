@@ -1,7 +1,7 @@
 package main
 
 /*
-#cgo LDFLAGS: -lportaudio -lwinmm -lole32 -lsetupapi -luuid -static
+#cgo LDFLAGS: -lportaudio -lwinmm -lole32 -lsetupapi -luuid -static -lopusfile -lopus -logg -lm
 #cgo CFLAGS: -I/mingw64/include
 */
 import "C"
