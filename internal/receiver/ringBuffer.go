@@ -2,35 +2,34 @@ package receiver
 
 import "sync"
 
-type ringBuffer struct {
-	buffer []int16
+type RingBuffer[T any] struct {
+	buffer []T
 	head   int
 	tail   int
 	count  int
 	mu     sync.RWMutex
 }
 
-func newRingBuffer(size int) *ringBuffer {
-	return &ringBuffer{
-		buffer: make([]int16, size),
+func newRingBuffer[T any](size int) *RingBuffer[T] {
+	return &RingBuffer[T]{
+		buffer: make([]T, size),
 	}
 }
 
-func (rb *ringBuffer) Write(data []int16) int {
+func (rb *RingBuffer[T]) Write(data T) int {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
 	written := 0
-	for i := 0; i < len(data) && rb.count < len(rb.buffer); i++ {
-		rb.buffer[rb.tail] = data[i]
-		rb.tail = (rb.tail + 1) % len(rb.buffer)
-		rb.count++
-		written++
-	}
+	rb.buffer[rb.tail] = data
+	rb.tail = (rb.tail + 1) % len(rb.buffer)
+	rb.count++
+	written++
+
 	return written
 }
 
-func (rb *ringBuffer) Read(out []int16) int {
+func (rb *RingBuffer[T]) Read(out []T) int {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
@@ -44,13 +43,13 @@ func (rb *ringBuffer) Read(out []int16) int {
 	return n
 }
 
-func (rb *ringBuffer) Available() int {
+func (rb *RingBuffer[T]) Available() int {
 	rb.mu.RLock()
 	defer rb.mu.RUnlock()
 	return rb.count
 }
 
-func (rb *ringBuffer) Clear() {
+func (rb *RingBuffer[T]) Clear() {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	rb.head = 0

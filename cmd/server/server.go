@@ -19,7 +19,7 @@ type Server struct {
 	cancel  context.CancelFunc
 }
 
-func NewServer(config interface{}) *Server {
+func NewServer(config any) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
 		workers: []worker.Worker{
@@ -38,7 +38,7 @@ func (s *Server) Start() {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			if err := worker.Start(s.ctx, &s.wg); err != nil {
+			if err := worker.Start(s.ctx); err != nil {
 				log.Println("Worker error (continuing): ", err)
 			}
 		}()

@@ -2,73 +2,82 @@ package pipeline
 
 import (
 	"context"
-	"sync"
+	"log"
 )
 
-type Pipeline struct {
-	stages []func(<-chan interface{}) <-chan interface{}
-	ctx    context.Context
-	cancel context.CancelFunc
+type TypedStage[T any, U any] interface {
+	Process(ctx context.Context, in <-chan T) (<-chan U, error)
 }
 
-func NewPipeline(ctx context.Context) *Pipeline {
-	ctx, cancel := context.WithCancel(ctx)
-	return &Pipeline{
-		ctx:    ctx,
-		cancel: cancel,
-	}
+type GenericWrapper[T any, U any] struct {
+	Stage TypedStage[T, U]
 }
 
-func (p *Pipeline) AddStage(process func(interface{}) interface{}, workers int) *Pipeline {
-	stage := func(in <-chan interface{}) <-chan interface{} {
-		out := make(chan interface{})
+func (w *GenericWrapper[T, U]) Run(ctx context.Context, in <-chan any) <-chan any {
+	out := make(chan any, 20)
 
-		var wg sync.WaitGroup
-		wg.Add(workers)
-
-		for i := 0; i < workers; i++ {
-			go func() {
-				defer wg.Done()
-				for {
-					select {
-					case <-p.ctx.Done():
-						return
-					case item, ok := <-in:
-						if !ok {
-							return
-						}
-						result := process(item)
-
-						select {
-						case <-p.ctx.Done():
-							return
-						case out <- result:
-						}
-					}
-				}
-			}()
+	typedIn := make(chan T, 20)
+	go func() {
+		defer close(typedIn)
+		for item := range in {
+			if data, ok := item.(T); ok {
+				typedIn <- data
+			}
 		}
+	}()
 
-		go func() {
-			wg.Wait()
-			close(out)
-		}()
-
+	resultChan, err := w.Stage.Process(ctx, typedIn)
+	if err != nil {
+		log.Printf("Stage failed: %v", err)
+		close(out)
 		return out
 	}
 
+	go func() {
+		defer close(out)
+		for data := range resultChan {
+			select {
+			case <-ctx.Done():
+				return
+			case out <- data:
+			}
+		}
+	}()
+
+	return out
+}
+
+type Stage interface {
+	Run(ctx context.Context, in <-chan any) <-chan any
+}
+
+type Pipeline struct {
+	ctx    context.Context
+	stages []Stage
+}
+
+func NewPipeline(ctx context.Context) *Pipeline {
+	return &Pipeline{
+		ctx:    ctx,
+		stages: make([]Stage, 0),
+	}
+}
+
+func (p *Pipeline) AddStage(stage Stage) *Pipeline {
 	p.stages = append(p.stages, stage)
 	return p
 }
 
-func (p *Pipeline) Run(input <-chan interface{}) <-chan interface{} {
-	current := input
-	for _, stage := range p.stages {
-		current = stage(current)
+func (p *Pipeline) Run() {
+	if len(p.stages) == 0 {
+		return
 	}
-	return current
-}
 
-func (p *Pipeline) Stop() {
-	p.cancel()
+	startChan := make(chan any, 20)
+	close(startChan)
+
+	var outputChan <-chan any = p.stages[0].Run(p.ctx, startChan)
+	for i := 1; i < len(p.stages); i++ {
+		outputChan = p.stages[i].Run(p.ctx, outputChan)
+	}
 }

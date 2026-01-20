@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"sync"
 )
 
 type BaseEntity struct {
@@ -16,5 +15,5 @@ type AudioEntity struct {
 }
 
 type Worker interface {
-	Start(ctx context.Context, wg *sync.WaitGroup) error
+	Start(ctx context.Context) error
 }
