@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	worker "godis/internal"
-	"godis/internal/pipeline"
+	"godis/internal/utils/jitterbuffer"
+	"godis/internal/utils/pipeline"
+	"godis/internal/utils/rtp"
 	"reflect"
 	"strings"
 )
@@ -17,7 +19,7 @@ const (
 type Receiver struct {
 	worker.BaseEntity
 	worker.AudioEntity
-	audioBuffer *RingBuffer[*opusData]
+	audioBuffer *jitterbuffer.JitterBuffer
 }
 
 type PacketData struct {
@@ -61,19 +63,23 @@ func New(config interface{}) *Receiver {
 func (r *Receiver) Start(ctx context.Context) error {
 	p := pipeline.NewPipeline(ctx)
 
-	p.AddStage(&pipeline.GenericWrapper[any, *PacketData]{
+	p.AddStage(&pipeline.GenericWrapper[any, []byte]{
 		Stage: r.ReceiveUDPStage(),
 	})
 
-	p.AddStage(&pipeline.GenericWrapper[*PacketData, *opusData]{
-		Stage: r.DecodeOpusStage(),
+	p.AddStage(&pipeline.GenericWrapper[[]byte, *rtputils.RTPPacket]{
+		Stage: r.UnpackRTPStage(),
 	})
 
-	p.AddStage(&pipeline.GenericWrapper[*opusData, struct{}]{
-		Stage: r.AudioProcessorStage(),
-	})
+	// p.AddStage(&pipeline.GenericWrapper[*rtputils.RTPPacket, struct{}]{
+	// 	Stage: r.AudioProcessorStage(),
+	// })
 
-	p.AddStage(&pipeline.GenericWrapper[struct{}, any]{
+	// p.AddStage(&pipeline.GenericWrapper[struct{}, [][]int16]{
+	// 	Stage: r.DecodeOpusStage(),
+	// })
+
+	p.AddStage(&pipeline.GenericWrapper[[][]int16, any]{
 		Stage: r.PlaybackStage(),
 	})
 

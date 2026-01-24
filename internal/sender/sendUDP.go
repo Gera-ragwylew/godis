@@ -3,7 +3,7 @@ package sender
 import (
 	"context"
 	"fmt"
-	"godis/internal/pipeline"
+	"godis/internal/utils/pipeline"
 	"log"
 	"net"
 )

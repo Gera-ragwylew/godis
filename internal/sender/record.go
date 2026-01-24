@@ -2,10 +2,10 @@ package sender
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"godis/internal/pipeline"
+	"godis/internal/utils/pipeline"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/gordonklaus/portaudio"
@@ -25,54 +25,49 @@ func (r *recordMicrophoneStage) Process(ctx context.Context, in <-chan any) (<-c
 
 func (s *Sender) recordMicrophone(ctx context.Context) (chan []float32, error) {
 	buffer := make([]float32, s.FrameSize)
-	out := make(chan []float32, 20)
-	stream, err := portaudio.OpenDefaultStream(channels, 0, s.SampleRate, s.FrameSize, buffer)
+
+	defaultInputDevice, err := portaudio.DefaultInputDevice()
 	if err != nil {
-		return nil, fmt.Errorf("Stream creation error: %v\n", err)
+		return nil, fmt.Errorf("Input device error: %w", err)
+	}
+
+	streamParams := portaudio.StreamParameters{
+		Input: portaudio.StreamDeviceParameters{
+			Device:   defaultInputDevice,
+			Channels: channels,
+			Latency:  60 * time.Millisecond,
+		},
+		SampleRate:      float64(sampleRate),
+		FramesPerBuffer: len(buffer),
+		Flags:           0,
+	}
+
+	var mu sync.Mutex
+	out := make(chan []float32, 20)
+	callback := func(in []float32) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		data := make([]float32, len(in))
+		copy(data, in)
+
+		select {
+		case <-ctx.Done():
+			return
+		case out <- data:
+		default:
+			log.Println("Input channel full")
+		}
+	}
+
+	stream, err := portaudio.OpenStream(streamParams, callback)
+	if err != nil {
+		return nil, fmt.Errorf("Open stream failed: %w", err)
 	}
 
 	if err := stream.Start(); err != nil {
 		stream.Stop()
 		return nil, fmt.Errorf("Stream start error: %w", err)
 	}
-
-	frameDuration := time.Duration(float64(s.FrameSize)/s.SampleRate*1000) * time.Millisecond // 60 ms
-	ticker := time.NewTicker(frameDuration)
-
-	go func() {
-		defer func() {
-			stream.Stop()
-			stream.Close()
-			ticker.Stop()
-			close(out)
-			log.Println("Recording stopped and resources cleaned up")
-		}()
-
-		for {
-			select {
-			case <-ctx.Done():
-				log.Println("Stop recording by context...")
-				return
-			case <-ticker.C:
-				if err := stream.Read(); err != nil {
-					log.Printf("Stream reading error: %v\n", err)
-					if errors.Is(err, portaudio.InputOverflowed) {
-						log.Println("Error: ", err)
-						return
-					}
-					continue
-				}
-
-				data := make([]float32, len(buffer))
-				copy(data, buffer)
-
-				select {
-				case <-ctx.Done():
-					return
-				case out <- data:
-				}
-			}
-		}
-	}()
 	return out, nil
 }

@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"godis/internal/pipeline"
+	"godis/internal/utils/pipeline"
+	rtputils "godis/internal/utils/rtp"
 	"log"
 	"net"
 	"strings"
@@ -15,16 +16,16 @@ type receiveUDPStage struct {
 	receiver *Receiver
 }
 
-func (r *Receiver) ReceiveUDPStage() pipeline.TypedStage[any, *PacketData] {
+func (r *Receiver) ReceiveUDPStage() pipeline.TypedStage[any, []byte] {
 	return &receiveUDPStage{receiver: r}
 }
 
-func (r *receiveUDPStage) Process(ctx context.Context, in <-chan any) (<-chan *PacketData, error) {
+func (r *receiveUDPStage) Process(ctx context.Context, in <-chan any) (<-chan []byte, error) {
 	return r.receiver.receiveUDP(ctx, in)
 }
 
-func (r *Receiver) receiveUDP(ctx context.Context, in <-chan any) (<-chan *PacketData, error) {
-	out := make(chan *PacketData, 20)
+func (r *Receiver) receiveUDP(ctx context.Context, _ <-chan any) (<-chan []byte, error) {
+	out := make(chan []byte, 20)
 	lc := net.ListenConfig{}
 	if !strings.HasPrefix(r.Port, ":") {
 		r.Port = ":" + r.Port
@@ -40,7 +41,8 @@ func (r *Receiver) receiveUDP(ctx context.Context, in <-chan any) (<-chan *Packe
 		return nil, fmt.Errorf("Invalid connection type")
 	}
 
-	readTimeout := 100 * time.Millisecond
+	maxPacketSize := rtputils.DefaultOpusConfig().Mtu
+	readTimeout := 70 * time.Millisecond
 
 	go func() {
 		defer func() {
@@ -57,8 +59,8 @@ func (r *Receiver) receiveUDP(ctx context.Context, in <-chan any) (<-chan *Packe
 			default:
 				conn.SetReadDeadline(time.Now().Add(readTimeout))
 
-				buffer := make([]byte, r.FrameSize)
-				n, addr, err := conn.ReadFromUDP(buffer)
+				buffer := make([]byte, maxPacketSize)
+				n, _, err := conn.ReadFromUDP(buffer)
 				if err != nil {
 					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 						log.Println("Read timeout")
@@ -75,17 +77,8 @@ func (r *Receiver) receiveUDP(ctx context.Context, in <-chan any) (<-chan *Packe
 				}
 
 				if n >= 0 {
-					pd := &PacketData{
-						Addr:     addr.String(),
-						Sequence: 0,
-						Audio:    make([]byte, n),
-					}
-					copy(pd.Audio, buffer[:n])
-
 					select {
-					case out <- pd:
-						log.Printf("Received packet from %s, seq=%d, size=%d",
-							pd.Addr, pd.Sequence, len(pd.Audio))
+					case out <- buffer:
 					case <-ctx.Done():
 						return
 					case <-time.After(10 * time.Millisecond):

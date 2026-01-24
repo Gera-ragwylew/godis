@@ -1,0 +1,11 @@
+{
+    "go.goroot": "C:\\msys64\\mingw64\\lib\\go",
+    "go.testEnvVars": {
+        "CGO_ENABLED": 1,
+        "PATH": "C:\\msys64\\mingw64\\bin"
+    },
+    "go.toolsEnvVars": {
+        "CGO_ENABLED": 1,
+        "PATH": "C:\\msys64\\mingw64\\bin"
+    },
+}

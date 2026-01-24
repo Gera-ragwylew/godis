@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	worker "godis/internal"
-	"godis/internal/pipeline"
+	"godis/internal/utils/pipeline"
 	"reflect"
 	"strings"
 )
@@ -75,6 +75,10 @@ func (s *Sender) Start(ctx context.Context) error {
 
 	p.AddStage(&pipeline.GenericWrapper[[]int16, []byte]{
 		Stage: s.EncodeOpusStage(),
+	})
+
+	p.AddStage(&pipeline.GenericWrapper[[]byte, []byte]{
+		Stage: s.PackAsRTPStage(),
 	})
 
 	p.AddStage(&pipeline.GenericWrapper[[]byte, any]{

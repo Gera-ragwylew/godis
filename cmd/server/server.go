@@ -62,4 +62,6 @@ func (s *Server) Stop() {
 	case <-time.After(5 * time.Second):
 		log.Println("Warning: some workers didn't stop in time")
 	}
+
+	time.Sleep(time.Second * 2) // for portaudio.Terminate()
 }

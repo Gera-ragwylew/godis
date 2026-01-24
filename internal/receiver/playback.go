@@ -3,9 +3,7 @@ package receiver
 import (
 	"context"
 	"fmt"
-	"godis/internal/pipeline"
-	"log"
-	"time"
+	"godis/internal/utils/pipeline"
 
 	"github.com/gordonklaus/portaudio"
 )
@@ -14,17 +12,16 @@ type playbackStage struct {
 	receiver *Receiver
 }
 
-func (r *Receiver) PlaybackStage() pipeline.TypedStage[struct{}, any] {
+func (r *Receiver) PlaybackStage() pipeline.TypedStage[[][]int16, any] {
 	return &playbackStage{receiver: r}
 }
 
-func (r *playbackStage) Process(ctx context.Context, in <-chan struct{}) (<-chan any, error) {
+func (r *playbackStage) Process(ctx context.Context, in <-chan [][]int16) (<-chan any, error) {
 	return r.receiver.playback(ctx, in)
 }
 
-func (r *Receiver) playback(ctx context.Context, _ <-chan struct{}) (<-chan any, error) {
-	outBuffer := make([]int16, r.FrameSize)
-	stream, err := portaudio.OpenDefaultStream(0, 1, r.SampleRate, r.FrameSize, &outBuffer)
+func (r *Receiver) playback(_ context.Context, _ <-chan [][]int16) (<-chan any, error) {
+	stream, err := portaudio.OpenDefaultStream(0, 1, r.SampleRate, r.FrameSize, r.audioCallback)
 	if err != nil {
 		return nil, fmt.Errorf("Stream creation error: %v\n", err)
 	}
@@ -34,38 +31,41 @@ func (r *Receiver) playback(ctx context.Context, _ <-chan struct{}) (<-chan any,
 		stream.Close()
 		return nil, fmt.Errorf("Stream start error: %w", err)
 	}
-
-	frameDuration := time.Duration(float64(r.FrameSize)/r.SampleRate*1000) * time.Millisecond
-	playbackTicker := time.NewTicker(frameDuration)
-
-	go func() {
-		defer func() {
-			stream.Stop()
-			stream.Close()
-			playbackTicker.Stop()
-		}()
-
-		for {
-			select {
-			case <-ctx.Done():
-				log.Println("Playback stopped...")
-				return
-			case <-playbackTicker.C:
-				if r.audioBuffer.Available() >= 5 {
-					buffer := make([]*opusData, 20)
-					n := r.audioBuffer.Read(buffer)
-					if n > 0 {
-						for i := range n {
-							copy(outBuffer, buffer[i].Audio)
-							if err := stream.Write(); err != nil {
-								log.Println("Stream write error: ", err)
-							}
-						}
-
-					}
-				}
-			}
-		}
-	}()
 	return nil, nil
+}
+
+func (r *Receiver) audioCallback(out []int16) {
+	for i := range out {
+		out[i] = 0
+	}
+
+	activeSSRCs := r.audioBuffer.GetActiveStreams()
+
+	for _, ssrc := range activeSSRCs {
+		packet, err := r.audioBuffer.GetPacket(ssrc)
+		if err != nil || packet == nil {
+			continue
+		}
+
+		temp := make([]int16, len(out))
+		copy(temp, packet.PCMData)
+
+		r.mixAudio(out, temp)
+	}
+}
+
+func (r *Receiver) mixAudio(output, input []int16) {
+	limit := min(len(input), len(output))
+
+	for i := range limit {
+		mixed := int32(output[i]) + int32(input[i])
+
+		if mixed > 32767 {
+			mixed = 32767
+		} else if mixed < -32768 {
+			mixed = -32768
+		}
+
+		output[i] = int16(mixed)
+	}
 }

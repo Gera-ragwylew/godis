@@ -2,7 +2,7 @@ package sender
 
 import (
 	"context"
-	"godis/internal/pipeline"
+	"godis/internal/utils/pipeline"
 	"log"
 
 	"github.com/hraban/opus"
@@ -26,7 +26,6 @@ func (s *Sender) encodeOpus(ctx context.Context, in <-chan []int16) (chan []byte
 	if err != nil {
 		panic(err)
 	}
-	encoder.SetBitrate(bitrate)
 
 	go func() {
 		defer close(out)
@@ -34,24 +33,31 @@ func (s *Sender) encodeOpus(ctx context.Context, in <-chan []int16) (chan []byte
 		for {
 			select {
 			case <-ctx.Done():
-				log.Println("Stop encoding by context...")
 				return
 			case data, ok := <-in:
 				if !ok {
 					return
 				}
 
-				encoded := make([]byte, 1275) // ???
+				if len(data) == 0 {
+					log.Println("Empty audio frame, skipping")
+					continue
+				}
+
+				encoded := make([]byte, 2000)
 
 				n, err := encoder.Encode(data, encoded)
 				if err != nil {
 					log.Println(err)
 				}
 
+				encodedCopy := make([]byte, n)
+				copy(encodedCopy, encoded[:n])
+
 				select {
 				case <-ctx.Done():
 					return
-				case out <- encoded[:n]:
+				case out <- encodedCopy:
 				}
 			}
 		}

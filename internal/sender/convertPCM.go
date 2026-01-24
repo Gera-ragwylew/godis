@@ -2,8 +2,7 @@ package sender
 
 import (
 	"context"
-	"godis/internal/pipeline"
-	"log"
+	"godis/internal/utils/pipeline"
 )
 
 type convertToPCMStage struct {
@@ -27,7 +26,6 @@ func (s *Sender) convertToPCM(ctx context.Context, in <-chan []float32) (chan []
 		for {
 			select {
 			case <-ctx.Done():
-				log.Println("Stop converting by context...")
 				return
 			case data, ok := <-in:
 				if !ok {
